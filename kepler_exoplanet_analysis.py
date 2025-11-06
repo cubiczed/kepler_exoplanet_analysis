@@ -1,6 +1,14 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
+Kepler Exoplanet Analysis
+-------------------------
+Fetch ~N exoplanets from NASA's Exoplanet Archive (Planetary Systems table),
+then test Kepler's Third Law across systems and with stellar-mass correction.
+Outputs: cleaned CSV, plots (PNG), and a text summary report.
+
 Usage:
-    python kepler_exoplanet_analysis.py --limit 2000 --outdir results
+    python kepler_exoplanet_analysis.py --limit 2000 --outdir results --unique
 
 Dependencies:
     pip install requests pandas numpy matplotlib scipy
@@ -21,7 +29,7 @@ from scipy import stats
 import matplotlib.pyplot as plt
 
 # -------------------------- Constants -------------------------- #
-G = 6.67430e-11            # m^3 kg^-1 s^-2 
+G = 6.67430e-11            # m^3 kg^-1 s^-2 (2020 CODATA)
 M_SUN = 1.98847e30         # kg
 AU = 1.495978707e11        # m
 DAY = 86400.0              # s
@@ -39,7 +47,7 @@ class FitResult:
     stderr: float
 
 # --------------------------- TAP Query ------------------------- #
-def build_tap_query(limit: int) -> str:
+def build_tap_query(limit: int, unique: bool = False) -> str:
     cols = [
         "pl_name", "hostname",
         "pl_orbper","pl_orbpererr1","pl_orbpererr2",
@@ -48,12 +56,13 @@ def build_tap_query(limit: int) -> str:
         "sy_snum","sy_pnum"
     ]
     select_cols = ",".join(cols)
+    table = "pscomppars" if unique else "ps"
     base = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync"
-    query = f"SELECT TOP {limit} {select_cols} FROM ps WHERE pl_orbper IS NOT NULL AND pl_orbsmax IS NOT NULL AND st_mass IS NOT NULL ORDER BY pl_name ASC"
+    query = f"SELECT TOP {limit} {select_cols} FROM {table} WHERE pl_orbper IS NOT NULL AND pl_orbsmax IS NOT NULL AND st_mass IS NOT NULL ORDER BY pl_name ASC"
     return f"{base}?query={requests.utils.quote(query)}&format=csv"
 
-def fetch_dataframe(limit: int) -> pd.DataFrame:
-    url = build_tap_query(limit)
+def fetch_dataframe(limit: int, unique: bool = False) -> pd.DataFrame:
+    url = build_tap_query(limit, unique)
     r = requests.get(url, timeout=60)
     r.raise_for_status()
     return pd.read_csv(io.StringIO(r.text))
@@ -139,6 +148,7 @@ def plot_logT_loga(df: pd.DataFrame, out_png: str):
 
     if "sigma_T_s" in df and "sigma_a_m" in df:
         # Error bars in log space need propagation:
+        # δ(log T) ≈ δT / (T ln10), δ(log a) ≈ δa / (a ln10)
         x = df["loga"].values
         y = df["logT"].values
         xerr = (df["sigma_a_m"] / (df["a_m"] * np.log(10))).values
@@ -249,14 +259,17 @@ def main():
     ap.add_argument("--outdir", type=str, default="results", help="Output directory for CSV, plots, and report.")
     ap.add_argument("--require_uncertainties", action="store_true",
                     help="Drop rows without uncertainties in T, a, and M (stricter sample).")
+    ap.add_argument("--unique", action="store_true", help="Fetch unique planets only (uses pscomppars table instead of ps).")
     args = ap.parse_args()
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
     print("[1/5] Fetching data from NASA Exoplanet Archive...")
-    df_raw = fetch_dataframe(args.limit)
+    df_raw = fetch_dataframe(args.limit, args.unique)
     n_raw = len(df_raw)
+    print(f"Total rows fetched: {len(df_raw)}")
+    print(f"Unique planets: {df_raw['pl_name'].nunique()}")
     csv_raw = outdir / "raw_ps_subset.csv"
     df_raw.to_csv(csv_raw, index=False)
     print(f"Saved raw CSV: {csv_raw}")
